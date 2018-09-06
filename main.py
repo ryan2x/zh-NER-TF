@@ -120,3 +120,102 @@ elif args.mode == 'demo':
                 tag = model.demo_one(sess, demo_data)
                 PER, LOC, ORG = get_entity(tag, demo_sent)
                 print('PER: {}\nLOC: {}\nORG: {}'.format(PER, LOC, ORG))
+
+## demo
+elif args.mode == 'demo1':
+    ckpt_file = tf.train.latest_checkpoint(model_path)
+    print(ckpt_file)
+    paths['model_path'] = ckpt_file
+    model = BiLSTM_CRF(args, embeddings, tag2label, word2id, paths, config=config)
+    model.build_graph()
+    saver = tf.train.Saver()
+    demo_sent = '在周恩来总理的领导下，有当时中共中央主管科学工作的陈毅、国务院副总理兼国家计委主任李富春具体领导下，在北京召开了包括中央各部门、各有关高等学校和中国科学院的科学技术工作人员大会，动员制定十二年科学发展远景规划。'
+    with tf.Session(config=config) as sess:
+        print('============= demo =============')
+        saver.restore(sess, ckpt_file)
+        #
+        demo_sent = list(demo_sent.strip())
+        demo_data = [(demo_sent, ['O'] * len(demo_sent))]
+        tag = model.demo_one(sess, demo_data, verbose=True)
+        PER, LOC, ORG = get_entity(tag, demo_sent)
+        print('PER: {}\nLOC: {}\nORG: {}'.format(PER, LOC, ORG))
+
+## demo
+elif args.mode == 'save':
+    import shutil
+
+    ckpt_file = tf.train.latest_checkpoint(model_path)
+    print(ckpt_file)
+    paths['model_path'] = ckpt_file
+    model = BiLSTM_CRF(args, embeddings, tag2label, word2id, paths, config=config)
+    model.build_graph()
+    saver = tf.train.Saver()
+    #
+    model_version = "1"
+    export_path = os.path.join('.', args.train_data+"_export", model_version)
+    shutil.rmtree(export_path, ignore_errors=True)
+    builder = tf.saved_model.builder.SavedModelBuilder(export_path)
+    #
+    with tf.Session(config=config) as sess:
+        print('============= save =============')
+        saver.restore(sess, ckpt_file)
+        print('model restored')
+
+        graph = tf.get_default_graph()
+
+        # word_ids = tf.placeholder(tf.int32, shape=[None, None], name="word_ids")
+        sequence_lengths = tf.placeholder(tf.int32, shape=[None], name="sequence_lengths")
+        dropout_pl = tf.placeholder(dtype=tf.float32, shape=[], name="dropout")
+
+        word_ids = graph.get_tensor_by_name('word_ids:0')
+        sequence_lengths = graph.get_tensor_by_name('sequence_lengths:0')
+        dropout_pl = graph.get_tensor_by_name('dropout:0')
+        print(word_ids, sequence_lengths, dropout_pl)
+
+        logits = model.logits
+        transition_params = model.transition_params
+        # out_classes = graph.get_tensor_by_name('lstm/initial_state:0')
+
+        tensor_info_word_ids = tf.saved_model.utils.build_tensor_info(word_ids)
+        tensor_info_sequence_lengths = tf.saved_model.utils.build_tensor_info(sequence_lengths)
+        tensor_info_dropout = tf.saved_model.utils.build_tensor_info(dropout_pl)
+
+        tensor_info_logits = tf.saved_model.utils.build_tensor_info(logits)
+        tensor_info_transition_params = tf.saved_model.utils.build_tensor_info(transition_params)
+        # tensor_info_output = tf.saved_model.utils.build_tensor_info(output_tuple)
+
+        #
+        # feed_dict = {"word_ids": word_ids, "sequence_lengths": sequence_lengths, "dropout": dropout_pl}
+        # logits, transition_params = sess.run([model.logits, model.transition_params],
+        #                                      feed_dict=feed_dict)
+        print('logits', logits)
+        print('transition_params', transition_params)
+
+        prediction_signature = (
+            tf.saved_model.signature_def_utils.build_signature_def(
+                inputs={'word_ids': tensor_info_word_ids,
+                        'sequence_lengths': tensor_info_sequence_lengths,
+                        'dropout': tensor_info_dropout},
+                outputs={'logits': tensor_info_logits, "transition_params": tensor_info_transition_params},
+                # outputs={'logits': logits, "transition_params": transition_params},
+                # outputs={'Placeholder_1': tensor_info_output},
+                # outputs={'Placeholder_1': tensor_info_logits, "Placeholder_2": tensor_info_transition_params},
+                method_name=tf.saved_model.signature_constants.PREDICT_METHOD_NAME))
+
+        legacy_init_op = tf.group(
+            tf.tables_initializer(), name='legacy_init_op')
+
+        builder.add_meta_graph_and_variables(
+            sess, [tf.saved_model.tag_constants.SERVING],
+            signature_def_map={
+                'predict_word_ids':
+                    prediction_signature,
+            },
+            legacy_init_op=legacy_init_op
+        )
+
+        # export the model
+        builder.save(as_text=True)
+
+    print("model saved")
+
