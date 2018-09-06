@@ -6,3 +6,4 @@ __pycache__/
 data_path_save/*/results/
 data_path_save/*/summaries/
 data_path_export/
+.ipynb_checkpoints/

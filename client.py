@@ -6,26 +6,12 @@ from tensorflow.contrib.crf import viterbi_decode
 
 
 class BiLSTM_CRF_Client(object):
-    def __init__(self, args, embeddings, tag2label, vocab, paths, config):
+    def __init__(self, args, tag2label, vocab):
         self.batch_size = args.batch_size
-        self.epoch_num = args.epoch
-        self.hidden_dim = args.hidden_dim
-        self.embeddings = embeddings
-        self.CRF = args.CRF
-        self.update_embedding = args.update_embedding
-        self.dropout_keep_prob = args.dropout
-        self.optimizer = args.optimizer
-        self.lr = args.lr
-        self.clip_grad = args.clip
+        self.CRF = True
         self.tag2label = tag2label
         self.num_tags = len(tag2label)
         self.vocab = vocab
-        self.shuffle = args.shuffle
-        # self.model_path = paths['model_path']
-        # self.summary_path = paths['summary_path']
-        # self.logger = get_logger(paths['log_path'])
-        # self.result_path = paths['result_path']
-        self.config = config
 
     def demo_one(self, server, sent, verbose=None):
         label_list = []
@@ -58,7 +44,7 @@ class BiLSTM_CRF_Client(object):
         stub, request = serving_client(host, port)
 
         input_seq_length = len(seqs[0])
-        tag_length = len(self.tag2label)
+        tag_length = self.num_tags
 
         request.inputs['word_ids'].CopyFrom(
             tf.contrib.util.make_tensor_proto(feed_dict["word_ids"],
@@ -69,18 +55,22 @@ class BiLSTM_CRF_Client(object):
         request.inputs['dropout'].CopyFrom(
             tf.contrib.util.make_tensor_proto(feed_dict["dropout"], shape=[], dtype=np.float32))
 
-        print(request)
+        if verbose:
+            print(request)
 
         # sync requests
         result_future = stub.Predict(request, 30.)
-        print(result_future)
+        if verbose:
+            print(result_future)
 
         logits = np.array(result_future.outputs['logits'].float_val).reshape((1, input_seq_length, tag_length))
         transition_params = np.array(result_future.outputs['transition_params'].float_val).reshape((tag_length, tag_length))
-        print(logits)
-        print(logits.shape, logits.dtype)
-        print(transition_params)
-        print(transition_params.shape, transition_params.dtype)
+
+        if verbose:
+            print(logits)
+            print(logits.shape, logits.dtype)
+            print(transition_params)
+            print(transition_params.shape, transition_params.dtype)
 
         # logits, transition_params = client.run(feed_dict)
         label_list = []
@@ -98,7 +88,6 @@ class BiLSTM_CRF_Client(object):
 
         :param seqs:
         :param labels:
-        :param lr:
         :param dropout:
         :return: feed_dict
         """
@@ -139,57 +128,28 @@ def serving_client(host, port, name=None, method=None):
 def test101(**kwargs):
     import argparse
     from utils import str2bool
-    from data import read_dictionary, tag2label, random_embedding
-    import tensorflow as tf
+    from data import read_dictionary, tag2label
 
     print('test101', kwargs)
 
-    ## Session configuration
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # default: 0
-    config = tf.ConfigProto()
-    config.gpu_options.allow_growth = True
-    config.gpu_options.per_process_gpu_memory_fraction = 0.2  # need ~700MB GPU memory
-
-    ## hyperparameters
+    ##
     parser = argparse.ArgumentParser(description='BiLSTM-CRF for Chinese NER task')
     parser.add_argument('--train_data', type=str, default='data_path', help='train data source')
-    parser.add_argument('--test_data', type=str, default='data_path', help='test data source')
-    parser.add_argument('--batch_size', type=int, default=64, help='#sample of each minibatch')
-    parser.add_argument('--epoch', type=int, default=40, help='#epoch of training')
-    parser.add_argument('--hidden_dim', type=int, default=300, help='#dim of hidden state')
-    parser.add_argument('--optimizer', type=str, default='Adam', help='Adam/Adadelta/Adagrad/RMSProp/Momentum/SGD')
-    parser.add_argument('--CRF', type=str2bool, default=True, help='use CRF at the top layer. if False, use Softmax')
-    parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
-    parser.add_argument('--clip', type=float, default=5.0, help='gradient clipping')
-    parser.add_argument('--dropout', type=float, default=0.5, help='dropout keep_prob')
-    parser.add_argument('--update_embedding', type=str2bool, default=True, help='update embedding during training')
-    parser.add_argument('--pretrain_embedding', type=str, default='random',
-                        help='use pretrained char embedding or init it randomly')
-    parser.add_argument('--embedding_dim', type=int, default=300, help='random init char embedding_dim')
-    parser.add_argument('--shuffle', type=str2bool, default=True, help='shuffle training data before each epoch')
-    parser.add_argument('--mode', type=str, default='demo', help='train/test/demo')
     parser.add_argument('--demo_model', type=str, default='1521112368', help='model for test and demo')
+    parser.add_argument('--batch_size', type=int, default=64, help='#sample of each minibatch')
     args = parser.parse_args([])
 
-    ## get char embeddings
+    ##
     word2id = read_dictionary(os.path.join('.', args.train_data, 'word2id.pkl'))
-    if args.pretrain_embedding == 'random':
-        embeddings = random_embedding(word2id, args.embedding_dim)
-    else:
-        embedding_path = 'pretrain_embedding.npy'
-        embeddings = np.array(np.load(embedding_path), dtype='float32')
 
-    paths = {}
-
-    client = BiLSTM_CRF_Client(args, embeddings, tag2label, word2id, paths, config=config)
+    client = BiLSTM_CRF_Client(args, tag2label, word2id)
 
     demo_sent = kwargs.get("demo_sent")
     demo_sent = list(demo_sent.strip())
     print('demo_sent', len(demo_sent))
     demo_data = [(demo_sent, ['O'] * len(demo_sent))]
 
-    ret1 = client.demo_one(kwargs.get("server"), demo_data, verbose=True)
+    ret1 = client.demo_one(kwargs.get("server"), demo_data, verbose=False)
 
     print('result-1', ret1)
 
@@ -197,59 +157,6 @@ def test101(**kwargs):
 
     PER, LOC, ORG = get_entity(ret1, demo_sent)
     print('PER: {}\nLOC: {}\nORG: {}'.format(PER, LOC, ORG))
-
-
-def test102(**kwargs):
-    print('test102', kwargs)
-
-    import tensorflow as tf
-
-    server = kwargs.get("server")
-
-    host, port = server.split(':')
-    stub, request = serving_client(host, port, "half_plus_two", "serving_default")
-
-    values = kwargs.get('values')
-    if not values:
-        values = [34.55, 233.233]
-    request.inputs['x'].CopyFrom(
-        tf.contrib.util.make_tensor_proto(values, shape=[len(values)], dtype=np.float32))
-
-    # sync requests
-    result_future = stub.Predict(request, 30.)
-    # print(result_future)
-    result = np.array(result_future.outputs['y'].float_val)
-    print('result', result)
-
-
-def test103(**kwargs):
-    print('test103', kwargs)
-
-    import tensorflow as tf
-
-    server = kwargs.get("server")
-    method = kwargs.get("method")
-
-    host, port = server.split(':')
-    if not method:
-        stub, request = serving_client(host, port, "counter", "get_counter")
-    elif method in ['incr_counter', 'reset_counter']:
-        stub, request = serving_client(host, port, "counter", method)
-    elif method == "incr_counter_by":
-        stub, request = serving_client(host, port, "counter", method)
-        delta = float(kwargs.get('delta', 33.45))
-        request.inputs['delta'].CopyFrom(
-            tf.contrib.util.make_tensor_proto(delta, shape=[], dtype=tf.float32))
-        print(request.inputs['delta'])
-    else:
-        stub, request = serving_client(host, port, "counter", "get_counter")
-
-    # sync requests
-    result_future = stub.Predict(request, 30.)
-    # print(result_future)
-
-    counter = np.array(result_future.outputs['output'].float_val)
-    print(counter)
 
 
 if __name__ == '__main__':
